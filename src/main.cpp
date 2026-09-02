@@ -743,6 +743,7 @@ void publish_status() {
     mqtt.publish((base + "/lock").c_str(), data.intLock ? "ON" : "OFF");
     
     DynamicJsonDocument doc(2048);
+    doc["firmware_version"] = FIRMWARE_VERSION;
     doc["room"] = configManager.room_names[i];
     
     // Map Wavin modes to HA Mode + Preset, with vacation taking precedence
@@ -869,6 +870,7 @@ void publish_status() {
       mqtt.publish((base + "/lock").c_str(), anyLock ? "ON" : "OFF");
       
       DynamicJsonDocument doc(2048);
+      doc["firmware_version"] = FIRMWARE_VERSION;
       doc["mode"] = anyHeat ? "heat" : "off";
       
       String masterPreset = "none";
