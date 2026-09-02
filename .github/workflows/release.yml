@@ -1,0 +1,32 @@
+name: Build and Release Firmware
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: pip install platformio
+      - run: pio run
+
+      - name: Find firmware bin
+        run: |
+          BIN_PATH=$(find .pio/build -name "*.bin" | head -n1)
+          test -n "$BIN_PATH" || (echo "No .bin found" && exit 1)
+          echo "BIN_PATH=$BIN_PATH" >> $GITHUB_ENV
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.BIN_PATH }}
