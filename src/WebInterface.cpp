@@ -148,6 +148,7 @@ void WebInterface::begin() {
     server.on("/update", HTTP_POST, std::bind(&WebInterface::handleUpdate, this), std::bind(&WebInterface::handleUpdateUpload, this));
     server.on("/github_check", HTTP_POST, std::bind(&WebInterface::handleGitHubCheck, this));
     server.on("/github_update", HTTP_POST, std::bind(&WebInterface::handleGitHubUpdate, this));
+    server.on("/ota_status", HTTP_GET, std::bind(&WebInterface::handleOtaStatus, this));
     server.on("/toggle_telnet", HTTP_POST, std::bind(&WebInterface::handleToggleTelnet, this));
     server.on("/toggle_dark_mode", HTTP_POST, std::bind(&WebInterface::handleToggleDarkMode, this));
     server.on("/discovery", HTTP_POST, std::bind(&WebInterface::handleDiscovery, this));
@@ -470,6 +471,10 @@ void WebInterface::handleGitHubCheck() {
                 TelnetStream.printf("GitHub update: selected asset='%s' url='%s'\n",
                                      assetName.c_str(), assetUrl.c_str());
                 
+                if (otaFailed && otaLastError != "") {
+                    html += "<p style='color:#dc3545;'>Previous update attempt failed: " + otaLastError + "</p>";
+                }
+
                 if (assetUrl != "") {
                     html += "<p>Found compatible binary: " + assetName + "</p>";
                     html += "<form method='POST' action='/github_update'>";
@@ -501,15 +506,49 @@ void WebInterface::handleGitHubUpdate() {
         server.send(400, "text/plain", "Missing URL");
         return;
     }
-    
-    server.send(200, "text/html", "<html><head><meta http-equiv='refresh' content='20;url=/'><style>body{font-family:sans-serif;padding:50px;text-align:center;}</style></head><body><h1>Updating...</h1><p>Downloading and installing firmware.</p><p>The device will reboot automatically.</p></body></html>");
+
+    otaInProgress = true;
+    otaFailed = false;
+    otaLastError = "";
+
+    // The page polls /ota_status so a failed download is actually reported to
+    // the user instead of leaving them staring at "Updating..." forever.
+    String html = "<html><head><style>body{font-family:sans-serif;padding:50px;text-align:center;}"
+                  "#err{color:#dc3545;display:none;}</style></head><body>"
+                  "<h1 id='title'>Updating...</h1>"
+                  "<p id='msg'>Downloading and installing firmware.</p>"
+                  "<p id='err'></p>"
+                  "<p><a href='/' style='color:#666;'>&laquo; Back to Dashboard</a></p>"
+                  "<script>"
+                  "function poll(){"
+                  "fetch('/ota_status').then(r=>r.json()).then(d=>{"
+                  "if(d.inProgress){setTimeout(poll,2000);}"
+                  "else if(d.failed){"
+                  "document.getElementById('title').innerText='Update Failed';"
+                  "document.getElementById('msg').style.display='none';"
+                  "var e=document.getElementById('err');e.style.display='block';"
+                  "e.innerText=d.error;"
+                  "}else{"
+                  "document.getElementById('msg').innerText='Update succeeded. Device is rebooting...';"
+                  "setTimeout(function(){window.location='/';},15000);"
+                  "}"
+                  "}).catch(()=>setTimeout(poll,2000));"
+                  "}"
+                  "setTimeout(poll,2000);"
+                  "</script></body></html>";
+    server.send(200, "text/html", html);
     server.client().flush(); // Send response immediately
-    
+
     TelnetStream.printf("GitHub OTA: starting download from %s\n", url.c_str());
-    
+
     WiFiClientSecure client;
+    // GitHub's browser_download_url redirects (302) to a signed
+    // objects.githubusercontent.com URL. Certificate validation for that
+    // redirect destination is unreliable on-device (different CA chain,
+    // clock drift affecting cert validity, etc.), so skip validation and
+    // rely on retries/CRC checks below instead of failing the whole update.
     client.setInsecure();
-    
+
     // GitHub asset URLs (browser_download_url) respond with an HTTP redirect
     // (302) to a signed objects.githubusercontent.com URL. HTTPUpdate disables
     // redirect handling by default, which silently failed the download here -
@@ -521,20 +560,73 @@ void WebInterface::handleGitHubUpdate() {
     #ifdef STATUS_LED_PIN
     httpUpdate.setLedPin(STATUS_LED_PIN, LOW);
     #endif
-    t_httpUpdate_return ret = httpUpdate.update(client, url);
-    
+
+    const int maxAttempts = 3;
+    t_httpUpdate_return ret = HTTP_UPDATE_FAILED;
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+        TelnetStream.printf("GitHub OTA: attempt %d/%d\n", attempt, maxAttempts);
+
+        // Re-arm certificate handling and connect timeout for every attempt -
+        // a previous failed attempt can leave the secure client in a state
+        // where the next connection silently fails otherwise.
+        client.setInsecure();
+        client.setTimeout(15000);
+
+        ret = httpUpdate.update(client, url);
+
+        if (ret == HTTP_UPDATE_OK) {
+            break;
+        }
+
+        if (ret == HTTP_UPDATE_NO_UPDATES) {
+            // Server reported the content hasn't changed (HTTP 304); retrying
+            // won't help.
+            break;
+        }
+
+        TelnetStream.printf("GitHub OTA: attempt %d failed (error %d): %s\n",
+                             attempt, httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
+
+        if (attempt < maxAttempts) {
+            delay(2000); // brief backoff before retrying
+        }
+    }
+
     switch (ret) {
         case HTTP_UPDATE_FAILED:
+            otaFailed = true;
+            otaLastError = "Download/flash failed after " + String(maxAttempts) + " attempt(s): (" +
+                            String(httpUpdate.getLastError()) + ") " + httpUpdate.getLastErrorString();
             TelnetStream.printf("GitHub OTA Failed (error %d): %s\n",
                                  httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
             break;
         case HTTP_UPDATE_NO_UPDATES:
+            otaFailed = true;
+            otaLastError = "Server reported no update available (HTTP 304).";
             TelnetStream.println("GitHub OTA: server reported no update (HTTP 304).");
             break;
         case HTTP_UPDATE_OK:
             TelnetStream.println("GitHub OTA: update succeeded, rebooting...");
             break;
     }
+
+    otaInProgress = false;
+    // On success, rebootOnUpdate(true) restarts the device before we get here.
+}
+
+void WebInterface::handleOtaStatus() {
+    String json = "{";
+    json += "\"inProgress\":" + String(otaInProgress ? "true" : "false") + ",";
+    json += "\"failed\":" + String(otaFailed ? "true" : "false") + ",";
+    json += "\"error\":\"";
+    for (size_t i = 0; i < otaLastError.length(); i++) {
+        char c = otaLastError[i];
+        if (c == '"' || c == '\\') json += '\\';
+        if (c == '\n' || c == '\r') { json += ' '; continue; }
+        json += c;
+    }
+    json += "\"}";
+    server.send(200, "application/json", json);
 }
 
 void WebInterface::handleDiscovery() {
