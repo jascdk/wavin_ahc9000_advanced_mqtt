@@ -21,25 +21,55 @@ jobs:
           python -m pip install --upgrade pip
           pip install platformio
 
-      - name: Build firmware
-        run: pio run
-
-      - name: Find firmware binary
-        id: findbin
+      # PlatformIO envs are defined explicitly in platformio.ini. The board
+      # the updater refers to as "pico" is built by the [env:esp32-pico]
+      # environment (board = pico32), so both supported boards are built
+      # here by name rather than relying on the default "pio run" behavior.
+      - name: Build firmware (esp32-pico and esp32-c3)
         run: |
-          BIN_PATH=$(find .pio/build -type f -name "firmware.bin" | head -n 1)
-          if [ -z "$BIN_PATH" ]; then
-            echo "No firmware.bin found"
-            exit 1
-          fi
-          echo "bin_path=$BIN_PATH" >> "$GITHUB_OUTPUT"
+          pio run -e esp32-pico -e esp32-c3
 
-      - name: Create GitHub Release and upload .bin
+      - name: Collect release assets
+        id: collect
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+
+          copy_asset() {
+            local env_name="$1"
+            local board_tag="$2"
+            local src=".pio/build/${env_name}/firmware.bin"
+            local uf2_src=".pio/build/${env_name}/firmware.uf2"
+            local dest="release-assets/wavin_ahc9000_${board_tag}_${{ github.ref_name }}.bin"
+
+            if [ ! -f "$src" ]; then
+              echo "::error::Expected firmware binary '$src' for env '$env_name' (board '$board_tag') was not produced by the build."
+              exit 1
+            fi
+            cp "$src" "$dest"
+            echo "Collected: $dest"
+
+            # UF2 is not produced by the espressif32 platform used here, but
+            # copy it when present (e.g. if a future env targets RP2040-based
+            # pico boards) so it can be uploaded alongside the .bin.
+            if [ -f "$uf2_src" ]; then
+              local uf2_dest="release-assets/wavin_ahc9000_${board_tag}_${{ github.ref_name }}.uf2"
+              cp "$uf2_src" "$uf2_dest"
+              echo "Collected: $uf2_dest"
+            fi
+          }
+
+          copy_asset "esp32-pico" "pico"
+          copy_asset "esp32-c3" "c3"
+
+          echo "Final release assets:"
+          ls -la release-assets
+
+      - name: Create GitHub Release and upload assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
           draft: false
           prerelease: false
-          files: |
-            ${{ steps.findbin.outputs.bin_path }}
+          files: release-assets/*
