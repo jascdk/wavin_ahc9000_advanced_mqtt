@@ -13,6 +13,51 @@ extern PubSubClient mqtt;
 extern ConfigManager configManager;
 extern void publish_discovery();
 
+// Strip a leading 'v'/'V' (e.g. "v2.3.0" -> "2.3.0").
+String normalizeVersion(const String& version) {
+    String v = version;
+    v.trim();
+    if (v.length() > 0 && (v[0] == 'v' || v[0] == 'V')) {
+        v = v.substring(1);
+    }
+    return v;
+}
+
+// Numerically compares two dotted version strings (e.g. "2.10.0" vs "2.9.0").
+// Returns >0 if a > b, <0 if a < b, 0 if equal. Missing/non-numeric segments are
+// treated as 0, so "2.3" == "2.3.0".
+int compareVersions(const String& a, const String& b) {
+    String va = normalizeVersion(a);
+    String vb = normalizeVersion(b);
+
+    int ia = 0, ib = 0;
+    while (ia < (int)va.length() || ib < (int)vb.length()) {
+        long na = 0;
+        while (ia < (int)va.length() && isDigit(va[ia])) {
+            na = na * 10 + (va[ia] - '0');
+            ia++;
+        }
+        long nb = 0;
+        while (ib < (int)vb.length() && isDigit(vb[ib])) {
+            nb = nb * 10 + (vb[ib] - '0');
+            ib++;
+        }
+
+        if (na != nb) {
+            return (na > nb) ? 1 : -1;
+        }
+
+        // Skip the separator ('.') for the next segment.
+        if (ia < (int)va.length() && va[ia] == '.') ia++;
+        if (ib < (int)vb.length() && vb[ib] == '.') ib++;
+
+        // Guard against infinite loops on unexpected characters.
+        if (ia < (int)va.length() && !isDigit(va[ia]) && va[ia] != '.') break;
+        if (ib < (int)vb.length() && !isDigit(vb[ib]) && vb[ib] != '.') break;
+    }
+    return 0;
+}
+
 String getSystemInfoHTML() {
     String html = "<html><head><title>System Info</title>";
     html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
@@ -368,46 +413,65 @@ void WebInterface::handleGitHubCheck() {
             }
             
             String tag_name = doc["tag_name"].as<String>();
-            String clean_tag = tag_name;
-            if (clean_tag.startsWith("v")) clean_tag = clean_tag.substring(1);
-            
+            String clean_tag = normalizeVersion(tag_name);
+            int cmp = compareVersions(clean_tag, FIRMWARE_VERSION);
+
+            TelnetStream.printf("GitHub update check: current=%s latest=%s (tag=%s) cmp=%d\n",
+                                 FIRMWARE_VERSION, clean_tag.c_str(), tag_name.c_str(), cmp);
+
             String html = "<html><head><title>Update Check</title><meta name='viewport' content='width=device-width, initial-scale=1'><style>body{font-family:sans-serif;padding:20px;background:#f0f2f5;} .card{background:white;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);max-width:500px;margin:0 auto;} .btn{background:#005eb8;color:white;padding:10px 20px;text-decoration:none;border-radius:4px;display:inline-block;border:none;cursor:pointer;font-size:16px;} .btn:hover{background:#004494;}</style></head><body>";
             html += "<div class='card'><h2>Firmware Update</h2>";
             html += "<p><strong>Current Version:</strong> " + String(FIRMWARE_VERSION) + "</p>";
             html += "<p><strong>Latest Version:</strong> " + clean_tag + "</p>";
             
-            if (clean_tag != String(FIRMWARE_VERSION)) {
+            if (cmp > 0) {
                 html += "<p style='color:#28a745;'><strong>A new version is available!</strong></p>";
                 
                 String assetUrl = "";
+                String assetName = "";
                 JsonArray assets = doc["assets"];
                 
                 // Determine board identifier to find correct binary
                 #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ESP32C3)
                     const char* target_match = "c3";
+                    const char* other_match = "pico";
                 #else
                     const char* target_match = "pico"; // Default/Rev1
+                    const char* other_match = "c3";
                 #endif
-                
+
+                String fallbackUrl = "";
+                String fallbackName = "";
+
                 for (JsonObject asset : assets) {
                     String name = asset["name"].as<String>();
-                    if (name.endsWith(".bin")) {
-                        // Prioritize exact match for board type
-                        if (name.indexOf(target_match) >= 0) {
-                            assetUrl = asset["browser_download_url"].as<String>();
-                            break;
-                        }
-                        // Fallback for Pico (Rev1) if binary doesn't explicitly say "pico" but isn't "c3"
-                        #if !defined(CONFIG_IDF_TARGET_ESP32C3) && !defined(ESP32C3)
-                        if (name.indexOf("c3") == -1 && assetUrl == "") { 
-                             assetUrl = asset["browser_download_url"].as<String>();
-                        }
-                        #endif
+                    if (!name.endsWith(".bin")) continue;
+
+                    // Prioritize exact match for this board type.
+                    if (name.indexOf(target_match) >= 0) {
+                        assetUrl = asset["browser_download_url"].as<String>();
+                        assetName = name;
+                        break;
+                    }
+
+                    // Remember a generic candidate (not explicitly for the other board)
+                    // in case the release only ships a single, unlabeled binary.
+                    if (fallbackUrl == "" && name.indexOf(other_match) == -1) {
+                        fallbackUrl = asset["browser_download_url"].as<String>();
+                        fallbackName = name;
                     }
                 }
+
+                if (assetUrl == "" && fallbackUrl != "") {
+                    assetUrl = fallbackUrl;
+                    assetName = fallbackName;
+                }
+
+                TelnetStream.printf("GitHub update: selected asset='%s' url='%s'\n",
+                                     assetName.c_str(), assetUrl.c_str());
                 
                 if (assetUrl != "") {
-                    html += "<p>Found compatible binary.</p>";
+                    html += "<p>Found compatible binary: " + assetName + "</p>";
                     html += "<form method='POST' action='/github_update'>";
                     html += "<input type='hidden' name='url' value='" + assetUrl + "'>";
                     html += "<button type='submit' class='btn'>Install Update</button>";
@@ -421,10 +485,12 @@ void WebInterface::handleGitHubCheck() {
             html += "<br><a href='/' style='color:#666;text-decoration:none;'>&laquo; Back to Dashboard</a></div></body></html>";
             server.send(200, "text/html", html);
         } else {
+            TelnetStream.printf("GitHub API Error: HTTP %d\n", httpCode);
             server.send(500, "text/plain", "GitHub API Error: " + String(httpCode));
         }
         https.end();
     } else {
+        TelnetStream.println("GitHub API: connection failed");
         server.send(500, "text/plain", "Connection Failed");
     }
 }
@@ -439,17 +505,35 @@ void WebInterface::handleGitHubUpdate() {
     server.send(200, "text/html", "<html><head><meta http-equiv='refresh' content='20;url=/'><style>body{font-family:sans-serif;padding:50px;text-align:center;}</style></head><body><h1>Updating...</h1><p>Downloading and installing firmware.</p><p>The device will reboot automatically.</p></body></html>");
     server.client().flush(); // Send response immediately
     
+    TelnetStream.printf("GitHub OTA: starting download from %s\n", url.c_str());
+    
     WiFiClientSecure client;
     client.setInsecure();
     
+    // GitHub asset URLs (browser_download_url) respond with an HTTP redirect
+    // (302) to a signed objects.githubusercontent.com URL. HTTPUpdate disables
+    // redirect handling by default, which silently failed the download here -
+    // force it to follow redirects so the actual firmware bytes are fetched.
+    httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    httpUpdate.rebootOnUpdate(true);
+
     // Increase buffer size for faster download
     #ifdef STATUS_LED_PIN
     httpUpdate.setLedPin(STATUS_LED_PIN, LOW);
     #endif
     t_httpUpdate_return ret = httpUpdate.update(client, url);
     
-    if (ret == HTTP_UPDATE_FAILED) {
-        TelnetStream.printf("OTA Failed: %s\n", httpUpdate.getLastErrorString().c_str());
+    switch (ret) {
+        case HTTP_UPDATE_FAILED:
+            TelnetStream.printf("GitHub OTA Failed (error %d): %s\n",
+                                 httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
+            break;
+        case HTTP_UPDATE_NO_UPDATES:
+            TelnetStream.println("GitHub OTA: server reported no update (HTTP 304).");
+            break;
+        case HTTP_UPDATE_OK:
+            TelnetStream.println("GitHub OTA: update succeeded, rebooting...");
+            break;
     }
 }
 
