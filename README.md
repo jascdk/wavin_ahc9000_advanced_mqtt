@@ -56,7 +56,7 @@ This board does not have a status LED.
 |-----------|--------------|-------------|
 | **GPIO 20** | **RO** (RX) | Receive Data from Wavin |
 | **GPIO 21** | **DI** (TX) | Transmit Data to Wavin |
-| **GPIO 10** | **DE** & **RE** | Flow Control |
+| **GPIO 3** | **DE** & **RE** | Flow Control |
 | **3.3V**    | **VCC**     | Power |
 | **GND**     | **GND**     | Ground |
 
