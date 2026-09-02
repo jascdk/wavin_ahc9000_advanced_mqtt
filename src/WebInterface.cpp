@@ -541,6 +541,46 @@ void WebInterface::handleGitHubUpdate() {
 
     TelnetStream.printf("GitHub OTA: starting download from %s\n", url.c_str());
 
+    // --- Pre-validate the asset URL before attempting the real download ---
+    // httpUpdate.update() only ever reports a generic "Wrong HTTP Code" once
+    // it hits a non-200 response - it never surfaces the actual status code
+    // it received. Doing a lightweight GET here (through the same redirect
+    // chain GitHub's browser_download_url uses) lets us log and report the
+    // real HTTP code up front, so failures caused by a bad/expired asset URL
+    // (403/404, rate limiting, etc.) can be diagnosed instead of just seeing
+    // "Wrong HTTP Code".
+    int preCheckCode = -1;
+    {
+        WiFiClientSecure preClient;
+        preClient.setInsecure();
+        preClient.setHandshakeTimeout(15000);
+        preClient.setTimeout(15000);
+
+        HTTPClient preCheck;
+        preCheck.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+        preCheck.setConnectTimeout(15000);
+        preCheck.setTimeout(15000);
+        preCheck.setUserAgent("wavin_ahc9000_advanced_mqtt-OTA");
+
+        if (preCheck.begin(preClient, url)) {
+            preCheckCode = preCheck.GET(); // headers only; body is not read here
+            TelnetStream.printf("GitHub OTA: pre-check HTTP code=%d, content-length=%d, final url=%s\n",
+                                 preCheckCode, preCheck.getSize(), preCheck.getLocation().c_str());
+            preCheck.end();
+        } else {
+            TelnetStream.println("GitHub OTA: pre-check failed to connect to asset URL");
+        }
+    }
+
+    if (preCheckCode != HTTP_CODE_OK && preCheckCode != HTTP_CODE_NOT_MODIFIED) {
+        otaInProgress = false;
+        otaFailed = true;
+        otaLastError = "Asset URL pre-check failed with HTTP code " + String(preCheckCode) +
+                        " - aborting before attempting the firmware download.";
+        TelnetStream.printf("GitHub OTA: aborting update, pre-check HTTP code=%d\n", preCheckCode);
+        return;
+    }
+
     WiFiClientSecure client;
     // GitHub's browser_download_url redirects (302) to a signed
     // objects.githubusercontent.com URL. Certificate validation for that
@@ -548,6 +588,8 @@ void WebInterface::handleGitHubUpdate() {
     // clock drift affecting cert validity, etc.), so skip validation and
     // rely on retries/CRC checks below instead of failing the whole update.
     client.setInsecure();
+    client.setHandshakeTimeout(15000);
+    client.setTimeout(15000);
 
     // GitHub asset URLs (browser_download_url) respond with an HTTP redirect
     // (302) to a signed objects.githubusercontent.com URL. HTTPUpdate disables
@@ -570,6 +612,7 @@ void WebInterface::handleGitHubUpdate() {
         // a previous failed attempt can leave the secure client in a state
         // where the next connection silently fails otherwise.
         client.setInsecure();
+        client.setHandshakeTimeout(15000);
         client.setTimeout(15000);
 
         ret = httpUpdate.update(client, url);
@@ -596,9 +639,10 @@ void WebInterface::handleGitHubUpdate() {
         case HTTP_UPDATE_FAILED:
             otaFailed = true;
             otaLastError = "Download/flash failed after " + String(maxAttempts) + " attempt(s): (" +
-                            String(httpUpdate.getLastError()) + ") " + httpUpdate.getLastErrorString();
-            TelnetStream.printf("GitHub OTA Failed (error %d): %s\n",
-                                 httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
+                            String(httpUpdate.getLastError()) + ") " + httpUpdate.getLastErrorString() +
+                            ". Pre-check HTTP code was " + String(preCheckCode) + ".";
+            TelnetStream.printf("GitHub OTA Failed (error %d): %s (pre-check HTTP code=%d)\n",
+                                 httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str(), preCheckCode);
             break;
         case HTTP_UPDATE_NO_UPDATES:
             otaFailed = true;
