@@ -6,7 +6,7 @@
 
 // Board Specific Configuration
 #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ESP32C3)
-    // ESP32-C3 Configuration
+    // ESP32-C3 Rev. 2 Configuration
     #define RS485_RX_PIN 20
     #define RS485_TX_PIN 21
     #define RS485_DE_RE_PIN 3
@@ -29,6 +29,6 @@
 // MQTT Settings
 #define MQTT_RECONNECT_DELAY 5000
 
-#define GITHUB_REPO "jascdk/WAVIN_AHC_9000_MQTT"
+#define GITHUB_REPO "jascdk/wavin_ahc9000_advanced_mqtt"
 
 #endif

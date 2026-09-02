@@ -27,7 +27,7 @@
 WiFiClient espClient;
 WebInterface webInterface(80);
 PubSubClient mqtt(espClient);
-HardwareSerial RS485(RS485_UART_NUM); // Use UART2 for PICO, UART1 for C3
+HardwareSerial RS485(RS485_UART_NUM); // Use UART2 for Pico, UART0 for C3
 WavinController wavin(RS485, RS485_DE_RE_PIN, RS485_DE_RE_PIN);
 #ifdef STATUS_LED_PIN
 Ticker ledTicker;
@@ -92,7 +92,7 @@ void toggleLed() {
 void perform_loopback_test() {
     TelnetStream.println("\n--- HARDWARE LOOPBACK TEST ---");
     TelnetStream.println("1. Disconnect the RS485 Module.");
-    TelnetStream.println("2. Connect a wire directly between GPIO 13 and GPIO 14.");
+    TelnetStream.printf("2. Connect a wire directly between GPIO %d and GPIO %d.\n", RS485_RX_PIN, RS485_TX_PIN);
     TelnetStream.println("Testing...");
 
     RS485.end();
@@ -151,9 +151,9 @@ void setup() {
   if (configManager.enable_telnet) {
       TelnetStream.begin();
       TelnetStream.println("\nStarting Wavin AHC 9000 Gateway...");
-      TelnetStream.println("RS485 Config: RX=13, TX=14, DE=26");
+      TelnetStream.printf("RS485 Config: RX=%d, TX=%d, DE=%d\n", RS485_RX_PIN, RS485_TX_PIN, RS485_DE_RE_PIN);
       TelnetStream.println("Loaded Room Names:");
-      for(int i=0; i<WAVIN_CHANNELS; i++) {
+      for (int i = 0; i < WAVIN_CHANNELS; i++) {
           TelnetStream.printf("  CH %d: %s\n", i, configManager.room_names[i]);
       }
   }
