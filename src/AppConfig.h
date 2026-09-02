@@ -29,6 +29,11 @@
 // MQTT Settings
 #define MQTT_RECONNECT_DELAY 5000
 
+// ESP32 Chip Temperature Monitoring
+#define CHIP_TEMP_CHECK_INTERVAL 60000  // Check every 60 seconds (milliseconds)
+#define CHIP_TEMP_WARN_THRESHOLD 65.0   // Degrees C - Log a warning above this
+#define CHIP_TEMP_CRIT_THRESHOLD 75.0   // Degrees C - Log a critical alert above this
+
 #define GITHUB_REPO "jascdk/wavin_ahc9000_advanced_mqtt"
 
 #endif
