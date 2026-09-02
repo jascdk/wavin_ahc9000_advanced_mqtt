@@ -2,7 +2,7 @@
 #define APPCONFIG_H
 
 #include <Arduino.h>
-#define FIRMWARE_VERSION "2.3.0"
+#define FIRMWARE_VERSION "2.4.1"
 
 // Board Specific Configuration
 #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ESP32C3)
