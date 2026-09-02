@@ -3,7 +3,7 @@ name: Release Firmware
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - 'v*'
 
 permissions:
   contents: write
@@ -39,8 +39,7 @@ jobs:
             local env_name="$1"
             local board_tag="$2"
             local src=".pio/build/${env_name}/firmware.bin"
-            local uf2_src=".pio/build/${env_name}/firmware.uf2"
-            local dest="release-assets/wavin_ahc9000_${board_tag}_${{ github.ref_name }}.bin"
+            local dest="release-assets/firmware-${board_tag}.bin"
 
             if [ ! -f "$src" ]; then
               echo "::error::Expected firmware binary '$src' for env '$env_name' (board '$board_tag') was not produced by the build."
@@ -48,19 +47,10 @@ jobs:
             fi
             cp "$src" "$dest"
             echo "Collected: $dest"
-
-            # UF2 is not produced by the espressif32 platform used here, but
-            # copy it when present (e.g. if a future env targets RP2040-based
-            # pico boards) so it can be uploaded alongside the .bin.
-            if [ -f "$uf2_src" ]; then
-              local uf2_dest="release-assets/wavin_ahc9000_${board_tag}_${{ github.ref_name }}.uf2"
-              cp "$uf2_src" "$uf2_dest"
-              echo "Collected: $uf2_dest"
-            fi
           }
 
-          copy_asset "esp32-pico" "pico"
-          copy_asset "esp32-c3" "c3"
+          copy_asset "esp32-pico" "esp32pico"
+          copy_asset "esp32-c3" "esp32c3"
 
           echo "Final release assets:"
           ls -la release-assets
