@@ -12,6 +12,8 @@ extern WavinController wavin;
 extern PubSubClient mqtt;
 extern ConfigManager configManager;
 extern void publish_discovery();
+extern float chip_temperature;
+extern float chip_temp_max;
 
 // Strip a leading 'v'/'V' (e.g. "v2.3.0" -> "2.3.0").
 String normalizeVersion(const String& version) {
@@ -117,6 +119,8 @@ String getSystemInfoHTML() {
     html += "<tr><th>CPU Freq</th><td>" + String(ESP.getCpuFreqMHz()) + " MHz</td></tr>";
     html += "<tr><th>Flash Size</th><td>" + String(ESP.getFlashChipSize() / 1024) + " KB</td></tr>";
     html += "<tr><th>Free Heap</th><td>" + String(ESP.getFreeHeap() / 1024.0, 1) + " KB</td></tr>";
+    html += "<tr><th>Chip Temperature</th><td>" + String(chip_temperature, 1) + " &deg;C</td></tr>";
+    html += "<tr><th>Chip Temperature (Max)</th><td>" + String(chip_temp_max, 1) + " &deg;C</td></tr>";
     
     html += "</table>";
 

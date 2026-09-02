@@ -46,6 +46,11 @@ float dailyMaxAvgTemp = 0.0;
 int statsDay = -1;
 int mqtt_reconnect_count = 0;
 
+// Chip Temperature Monitoring
+float chip_temperature = 0.0;
+float chip_temp_max = 0.0;
+unsigned long last_chip_temp_check = 0;
+
 // Maintenance State
 bool maint_active = false;
 unsigned long maint_start_millis = 0;
@@ -83,6 +88,7 @@ void stop_boost();
 void start_vacation();
 void stop_vacation();
 void update_status_led();
+void update_chip_temperature();
 #ifdef STATUS_LED_PIN
 void toggleLed() {
   digitalWrite(STATUS_LED_PIN, !digitalRead(STATUS_LED_PIN));
@@ -215,6 +221,11 @@ void loop() {
   if (mqtt.connected() && millis() - last_telemetry_time > 300000) { // 5 minutes
       last_telemetry_time = millis();
       publish_telemetry();
+  }
+
+  if (millis() - last_chip_temp_check > CHIP_TEMP_CHECK_INTERVAL) {
+      last_chip_temp_check = millis();
+      update_chip_temperature();
   }
 
   // Sync Clock once
@@ -922,6 +933,9 @@ void publish_status() {
       strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
       doc["esp_time"] = time_buf;
 
+      doc["esp_chip_temp"] = round(chip_temperature * 10.0) / 10.0;
+      doc["esp_chip_temp_max"] = round(chip_temp_max * 10.0) / 10.0;
+
       if (info.address != 0) {
           doc["device_name"] = info.deviceName;
           doc["hw_version"] = info.hwVersion;
@@ -1585,7 +1599,40 @@ void publish_discovery() {
       jsonOutput = "";
       serializeJson(doc, jsonOutput);
       mqtt.publish((String(configManager.mqtt_discovery_prefix) + "/sensor/" + device_id + "_total_current/config").c_str(), jsonOutput.c_str(), true);
+
+      // 16. ESP32 Chip Temperature Sensor
+      doc.clear();
+      device = doc.createNestedObject("dev");
+      device["ids"] = "wavin_" + cleanMac;
+
+      doc["name"] = "ESP32 Chip Temperature";
+      doc["default_entity_id"] = "sensor." + createObjectId("ESP32 Chip Temperature");
+      doc["uniq_id"] = device_id + "_chip_temp";
+      doc["dev_cla"] = "temperature";
+      doc["unit_of_meas"] = "°C";
+      doc["stat_t"] = base_topic + "/attributes";
+      doc["val_tpl"] = "{{ value_json.esp_chip_temp }}";
+      doc["ent_cat"] = "diagnostic";
+      jsonOutput = "";
+      serializeJson(doc, jsonOutput);
+      mqtt.publish((String(configManager.mqtt_discovery_prefix) + "/sensor/" + device_id + "_chip_temp/config").c_str(), jsonOutput.c_str(), true);
   } // End of master entity scope
+}
+
+void update_chip_temperature() {
+    // ESP32 internal temperature sensor returns degrees Fahrenheit
+    float tempF = temperatureRead();
+    chip_temperature = (tempF - 32.0) * 5.0 / 9.0;
+
+    if (chip_temperature > chip_temp_max) {
+        chip_temp_max = chip_temperature;
+    }
+
+    if (chip_temperature > CHIP_TEMP_CRIT_THRESHOLD) {
+        TelnetStream.printf("ALERT: ESP32 chip temperature CRITICAL: %.1f C\n", chip_temperature);
+    } else if (chip_temperature > CHIP_TEMP_WARN_THRESHOLD) {
+        TelnetStream.printf("WARNING: ESP32 chip temperature elevated: %.1f C\n", chip_temperature);
+    }
 }
 
 void publish_telemetry() {
@@ -1611,6 +1658,8 @@ void publish_telemetry() {
     doc["Uptime"] = uptimeStr;
     doc["UptimeSec"] = uptime;
     doc["Heap"] = ESP.getFreeHeap() / 1024;
+    doc["ChipTemp"] = round(chip_temperature * 10.0) / 10.0;
+    doc["ChipTempMax"] = round(chip_temp_max * 10.0) / 10.0;
     doc["MqttCount"] = mqtt_reconnect_count;
     doc["POWER"] = "ON";
     
