@@ -26,7 +26,9 @@ struct WavinChannel {
     float standbyTemp = 0.0;
     String mode = "heat";
     uint16_t rawConfig = 0;
-    String lastScannedMode = "";
+    // ESP32-side preset ("none", "eco", "comfort", "away"); never written to the controller
+    String preset = "none";
+    float presetRestoreTemp = 0.0;
     bool intLock = false;
     float hysteresis = 0.0;
     float currentTemp = 0.0;
@@ -64,6 +66,10 @@ public:
     bool setStandbyTemp(int channelIndex, float temp);
     bool setHysteresis(int channelIndex, float temp);
     bool setMode(int channelIndex, String mode);
+    // Presets are applied purely as setpoints on register 0x00; no preset mode bits are written.
+    bool applyPreset(int channelIndex, String preset);
+    void setPresetTemp(String preset, float temp);
+    float getPresetTemp(String preset);
     bool setIntLock(int channelIndex, bool locked);
     bool syncClock(uint16_t year, uint16_t month, uint16_t day, uint16_t weekday, uint16_t hour, uint16_t minute, uint16_t second);
 
@@ -75,6 +81,12 @@ private:
     WavinChannel _channels[WAVIN_CHANNELS];
     WavinDeviceInfo _deviceInfo;
     bool _initialized = false;
+    float _presetTemps[3] = {18.0, 22.0, 16.0}; // eco, comfort, away
+
+    bool writeSetpoint(int channelIndex, float temp);
+    bool restoreManualSetpoint(int channelIndex);
+    void loadPresets();
+    void savePreset(int channelIndex);
 
     void updateChannels();
     void updateDeviceInfo();

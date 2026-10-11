@@ -68,6 +68,7 @@ public:
     float boost_temp;
     float master_eco_temp;
     float master_comfort_temp;
+    float master_away_temp;
 
 private:
     Preferences preferences;

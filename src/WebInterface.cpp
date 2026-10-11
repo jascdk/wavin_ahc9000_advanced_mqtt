@@ -261,6 +261,7 @@ void WebInterface::handleBackup() {
   doc["enable_vacation"] = configManager.enable_vacation;
   doc["master_eco_temp"] = configManager.master_eco_temp;
   doc["master_comfort_temp"] = configManager.master_comfort_temp;
+  doc["master_away_temp"] = configManager.master_away_temp;
 
   JsonArray rooms = doc.createNestedArray("room_names");
   for (int i = 0; i < WAVIN_CHANNELS; i++) {
@@ -334,6 +335,7 @@ void WebInterface::handleRestore() {
     if (doc.containsKey("enable_vacation")) configManager.enable_vacation = doc["enable_vacation"];
     if (doc.containsKey("master_eco_temp")) configManager.master_eco_temp = doc["master_eco_temp"];
     if (doc.containsKey("master_comfort_temp")) configManager.master_comfort_temp = doc["master_comfort_temp"];
+    if (doc.containsKey("master_away_temp")) configManager.master_away_temp = doc["master_away_temp"];
     
     if (doc.containsKey("room_names")) {
         JsonArray rooms = doc["room_names"];

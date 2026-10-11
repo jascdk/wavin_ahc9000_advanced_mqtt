@@ -69,6 +69,13 @@ String boost_restore_modes[WAVIN_CHANNELS];
 bool vacation_active = false;
 float vacation_restore_temps[WAVIN_CHANNELS];
 String vacation_restore_modes[WAVIN_CHANNELS];
+String boost_restore_presets[WAVIN_CHANNELS];
+String maint_restore_presets[WAVIN_CHANNELS];
+
+// Setpoint to restore later: the pre-preset manual setpoint if a preset is active
+static float restorable_temp(const WavinChannel& d) {
+    return (d.preset != "none" && d.presetRestoreTemp > 0.0f) ? d.presetRestoreTemp : d.targetTemp;
+}
 unsigned long last_telemetry_time = 0;
 
 // --- Function Prototypes ---
@@ -170,6 +177,9 @@ void setup() {
 
   // Wavin Controller Init (Initialize Serial AFTER any loopback tests)
   wavin.begin(RS485_RX_PIN, RS485_TX_PIN);
+  wavin.setPresetTemp("eco", configManager.master_eco_temp);
+  wavin.setPresetTemp("comfort", configManager.master_comfort_temp);
+  wavin.setPresetTemp("away", configManager.master_away_temp);
 
   // MQTT Setup
   if (strlen(configManager.mqtt_server) > 0) {
@@ -494,6 +504,7 @@ void reconnect_mqtt() {
     mqtt.subscribe((baseTopic + "set_preset").c_str());
     mqtt.subscribe((baseTopic + "set_master_comfort_temp").c_str());
     mqtt.subscribe((baseTopic + "set_master_eco_temp").c_str());
+    mqtt.subscribe((baseTopic + "set_master_away_temp").c_str());
     mqtt.subscribe((baseTopic + "set_holiday_temp").c_str());
     mqtt.subscribe((baseTopic + "set_lock").c_str());
     mqtt.subscribe((baseTopic + "set_min_temp").c_str());
@@ -559,9 +570,9 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
           else if (command == "set_mode") { wavin.setMode(i, message); cmdSent = true; }
           else if (command == "set_preset") {
               if (message == "eco") {
-                  if ((configManager.eco_mask >> i) & 1) { wavin.setMode(i, "eco"); cmdSent = true; }
+                  if ((configManager.eco_mask >> i) & 1) { wavin.applyPreset(i, "eco"); cmdSent = true; }
               } else if (message == "comfort") {
-                  if ((configManager.comfort_mask >> i) & 1) { wavin.setMode(i, "comfort"); cmdSent = true; }
+                  if ((configManager.comfort_mask >> i) & 1) { wavin.applyPreset(i, "comfort"); cmdSent = true; }
               } else if (message == "away") {
                   // This is a global action, but we can trigger it from any master room
                   start_vacation();
@@ -569,7 +580,7 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
               } else if (message == "none") {
                   // If we are in vacation mode, stop it. Otherwise, set to heat.
                   if (vacation_active) stop_vacation();
-                  else wavin.setMode(i, "heat");
+                  else wavin.applyPreset(i, "none");
                   cmdSent = true;
               }
           }
@@ -584,39 +595,21 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
       }
 
       // Handle global commands that apply to all channels (run exactly once, not per master thermostat)
+      // Preset temperatures live on the ESP32; if the preset is active on a room its setpoint is updated immediately
       if (command == "set_master_eco_temp") {
           configManager.master_eco_temp = message.toFloat();
           configManager.save();
-          for (int j = 0; j < WAVIN_CHANNELS; j++) {
-              if (!((configManager.eco_mask >> j) & 1)) continue;
-              WavinChannel data = wavin.getChannelData(j);
-              if (data.hasThermostat) {
-                  wavin.setEcoTemp(j, configManager.master_eco_temp);
-                  delay(50);
-              }
-          }
+          wavin.setPresetTemp("eco", configManager.master_eco_temp);
       }
       else if (command == "set_master_comfort_temp") {
           configManager.master_comfort_temp = message.toFloat();
           configManager.save();
-          for (int j = 0; j < WAVIN_CHANNELS; j++) {
-              if (!((configManager.comfort_mask >> j) & 1)) continue;
-              WavinChannel data = wavin.getChannelData(j);
-              if (data.hasThermostat) {
-                  wavin.setComfortTemp(j, configManager.master_comfort_temp);
-                  delay(50);
-              }
-          }
+          wavin.setPresetTemp("comfort", configManager.master_comfort_temp);
       }
-      else if (command == "set_holiday_temp") {
-          float temp = message.toFloat();
-          for (int j = 0; j < WAVIN_CHANNELS; j++) {
-              WavinChannel data = wavin.getChannelData(j);
-              if (data.hasThermostat) {
-                  wavin.setHolidayTemp(j, temp);
-                  delay(50);
-              }
-          }
+      else if (command == "set_master_away_temp" || command == "set_holiday_temp") {
+          configManager.master_away_temp = message.toFloat();
+          configManager.save();
+          wavin.setPresetTemp("away", configManager.master_away_temp);
       }
 
       // Handle Lock separately due to custom mask
@@ -717,9 +710,8 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
   }
   else if (command == "set_mode") wavin.setMode(channel, message);
   else if (command == "set_preset") {
-      if (message == "eco") wavin.setMode(channel, "eco");
-      else if (message == "comfort") wavin.setMode(channel, "comfort");
-      else if (message == "none") wavin.setMode(channel, "heat");
+      if (message == "eco" || message == "comfort" || message == "away") wavin.applyPreset(channel, message);
+      else if (message == "none") wavin.applyPreset(channel, "none");
   }
   else if (command == "set_lock") wavin.setIntLock(channel, (message == "ON"));
   else if (command == "set_min_temp") wavin.setMinTemp(channel, message.toFloat());
@@ -766,9 +758,7 @@ void publish_status() {
         doc["preset_mode"] = "none";
     } else {
         doc["mode"] = "heat";
-        if (data.mode == "eco") doc["preset_mode"] = "eco";
-        else if (data.mode == "comfort") doc["preset_mode"] = "comfort";
-        else doc["preset_mode"] = "none";
+        doc["preset_mode"] = data.preset; // ESP32-side preset state
     }
 
     doc["min_temp"] = data.minTemp;
@@ -787,8 +777,9 @@ void publish_status() {
     doc["alarm_high_triggered"] = data.alarmHighTriggered;
     doc["current_temp"] = data.currentTemp;
     doc["target_temp"] = data.targetTemp;
-    doc["comfort_temp"] = data.comfortTemp;
-    doc["eco_temp"] = data.ecoTemp;
+    doc["comfort_temp"] = configManager.master_comfort_temp;
+    doc["eco_temp"] = configManager.master_eco_temp;
+    doc["away_temp"] = configManager.master_away_temp;
     doc["valve_current_ma"] = (int)g_wavinChannelCurrent[i];
 
     if (configManager.enable_floor_sensors) {
@@ -839,9 +830,9 @@ void publish_status() {
       sumAlarmHigh += data.alarmHighTemp;
       sumStandby += data.standbyTemp;
       sumHysteresis += data.hysteresis;
-      if (data.mode == "eco") countEco++;
-      if (data.mode == "comfort") countComfort++;
-      if (data.mode == "heat" || data.mode == "eco" || data.mode == "comfort") anyHeat = true;
+      if (data.preset == "eco") countEco++;
+      if (data.preset == "comfort") countComfort++;
+      if (data.mode != "off") anyHeat = true;
       if (data.outputActive) anyValve = true;
       if (data.intLock) anyLock = true;
       
@@ -906,8 +897,8 @@ void publish_status() {
       doc["target_temp"] = avgTarget;
       doc["master_eco_temp"] = configManager.master_eco_temp;
       doc["master_comfort_temp"] = configManager.master_comfort_temp;
-      WavinChannel data_ch0 = wavin.getChannelData(0); // Holiday temp is system-wide, get from ch0
-      doc["holiday_temp"] = data_ch0.holidayTemp;
+      doc["holiday_temp"] = configManager.master_away_temp;
+      doc["master_away_temp"] = configManager.master_away_temp;
       doc["daily_min_avg"] = round(dailyMinAvgTemp * 10.0) / 10.0;
       doc["daily_max_avg"] = round(dailyMaxAvgTemp * 10.0) / 10.0;
       doc["valve_active"] = anyValve;
@@ -1407,6 +1398,27 @@ void publish_discovery() {
       serializeJson(doc, jsonOutput);
       mqtt.publish((String(configManager.mqtt_discovery_prefix) + "/number/" + device_id + "_eco_temp/config").c_str(), jsonOutput.c_str(), true);
 
+      // Master Away Temp
+      doc.clear();
+      device = doc.createNestedObject("dev");
+      device["ids"] = "wavin_" + cleanMac;
+      device["name"] = "Wavin AHC 9000 Gateway";
+      device["mdl"] = "AHC 9000";
+      device["mf"] = "Wavin";
+
+      doc["name"] = "Master Away Temp";
+      doc["default_entity_id"] = "number." + createObjectId("Master Away Temp");
+      doc["uniq_id"] = device_id + "_away_temp";
+      doc["ic"] = "mdi:airplane";
+      doc["cmd_t"] = base_topic + "/set_master_away_temp";
+      doc["stat_t"] = base_topic + "/attributes";
+      doc["val_tpl"] = "{{ value_json.master_away_temp }}";
+      doc["min"] = 6; doc["max"] = 40; doc["step"] = 0.5;
+      doc["ent_cat"] = "config";
+      jsonOutput = "";
+      serializeJson(doc, jsonOutput);
+      mqtt.publish((String(configManager.mqtt_discovery_prefix) + "/number/" + device_id + "_away_temp/config").c_str(), jsonOutput.c_str(), true);
+
       // --- Maintenance Entities ---
       
       if (configManager.enable_maintenance) {
@@ -1723,7 +1735,8 @@ void start_maintenance() {
         if (!((configManager.maint_mask >> i) & 1)) continue; // Check Maintenance Mask
         WavinChannel data = wavin.getChannelData(i);
         if (data.hasThermostat) {
-            maint_restore_temps[i] = data.targetTemp;
+            maint_restore_temps[i] = restorable_temp(data);
+            maint_restore_presets[i] = data.preset;
             maint_restore_modes[i] = data.mode;
             
             // Ensure mode is Heat (Manual) so the 40C setpoint actually opens the valve
@@ -1797,6 +1810,11 @@ void stop_maintenance() {
             }
             delay(100); // Delay to prevent bus congestion
             
+            if (maint_restore_presets[i].length() > 0 && maint_restore_presets[i] != "none" && maint_restore_presets[i] != "away") {
+                wavin.applyPreset(i, maint_restore_presets[i]);
+                delay(100);
+            }
+
             // Restore Mode
             if (maint_restore_modes[i].length() > 0 && maint_restore_modes[i] != "heat") {
                 wavin.setMode(i, maint_restore_modes[i]);
@@ -1841,7 +1859,8 @@ void start_boost() {
         if (!((configManager.boost_mask >> i) & 1)) continue; // Check Boost Mask
         WavinChannel data = wavin.getChannelData(i);
         if (data.hasThermostat) {
-            boost_restore_temps[i] = data.targetTemp;
+            boost_restore_temps[i] = restorable_temp(data);
+            boost_restore_presets[i] = data.preset;
             boost_restore_modes[i] = data.mode;
             
             if (data.mode != "heat") {
@@ -1878,7 +1897,7 @@ void start_vacation() {
         if (!((configManager.vacation_mask >> i) & 1)) continue; // Check Vacation Mask
         WavinChannel data = wavin.getChannelData(i);
         if (data.hasThermostat) {
-            vacation_restore_temps[i] = data.targetTemp;
+            vacation_restore_temps[i] = restorable_temp(data);
             vacation_restore_modes[i] = data.mode;
             TelnetStream.printf("  CH %d: Storing temp %.1fC and mode '%s'.\n", i + 1, data.targetTemp, data.mode.c_str());
 
@@ -1887,9 +1906,9 @@ void start_vacation() {
                 wavin.setMode(i, "heat");
                 delay(100);
             }
-            // Use the holiday temp set on the controller
-            if (wavin.setTargetTemp(i, data.holidayTemp)) {
-                TelnetStream.printf("  CH %d set to %.1fC (Vacation)\n", i + 1, data.holidayTemp);
+            // Away temperature is stored on the ESP32 (setpoint only, no controller preset bits)
+            if (wavin.applyPreset(i, "away")) {
+                TelnetStream.printf("  CH %d set to %.1fC (Vacation)\n", i + 1, configManager.master_away_temp);
                 channels_set++;
             } else {
                 TelnetStream.printf("  CH %d: FAILED to set vacation temp.\n", i + 1);
@@ -1969,6 +1988,11 @@ void stop_boost() {
                 TelnetStream.printf("  CH %d restored to %.1fC\n", i + 1, restore);
             }
             delay(100);
+
+            if (boost_restore_presets[i].length() > 0 && boost_restore_presets[i] != "none" && boost_restore_presets[i] != "away") {
+                wavin.applyPreset(i, boost_restore_presets[i]);
+                delay(100);
+            }
             
             if (boost_restore_modes[i].length() > 0 && boost_restore_modes[i] != "heat") {
                 wavin.setMode(i, boost_restore_modes[i]);
