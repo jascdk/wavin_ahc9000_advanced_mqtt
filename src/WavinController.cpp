@@ -1,6 +1,7 @@
 #include "WavinController.h"
 #include <TelnetStream.h>
 #include "AppConfig.h"
+#include <Preferences.h>
 
 float g_wavinChannelCurrent[WAVIN_CHANNELS];
 float g_wavinTotalCurrent = 0.0;
@@ -19,6 +20,7 @@ void WavinController::begin(int rxPin, int txPin) {
     _serial.begin(WAVIN_BAUD_RATE, WAVIN_CONFIG, rxPin, txPin);
     
     _lastReadTime = 0;
+    loadPresets();
 }
 
 bool WavinController::loop() {
@@ -79,35 +81,39 @@ void WavinController::updateChannels() {
 
                 // Index 0x07: Configuration (Mode & Lock)
                 int modeBits = buffer[7] & 0x07; // Bits 0-2
-                // 0=Manual, 1=Standby, 2=Eco, 3=Comfort
+                // 0=Manual, 1=Standby. Eco/Comfort mode bits are not used (thermostats only support heat/off);
+                // presets are tracked on the ESP32 as setpoints.
+                float scannedSetpoint = buffer[0] / 10.0f;
                 if (modeBits == 1) {
                     _channels[ch].mode = "off";
                     _channels[ch].targetTemp = _channels[ch].standbyTemp;
-                } else if (modeBits == 2) {
-                    _channels[ch].mode = "eco";
-                    _channels[ch].targetTemp = _channels[ch].ecoTemp;
-                } else if (modeBits == 3) {
-                    _channels[ch].mode = "comfort";
-                    _channels[ch].targetTemp = _channels[ch].comfortTemp;
                 } else {
                     _channels[ch].mode = "heat";
-                    _channels[ch].targetTemp = buffer[0] / 10.0f; // In heat mode, Reg 0 is target
+                    _channels[ch].targetTemp = scannedSetpoint; // In heat mode, Reg 0 is target
+                }
+
+                // Drop the active preset if the setpoint (or mode) no longer matches it
+                if (_channels[ch].preset != "none") {
+                    float expected = getPresetTemp(_channels[ch].preset);
+                    if (modeBits != 0 || fabsf(scannedSetpoint - expected) > 0.05f) {
+                        TelnetStream.printf("CH%d preset '%s' cleared (setpoint %.1f != %.1f)\n", ch + 1,
+                            _channels[ch].preset.c_str(), scannedSetpoint, expected);
+                        _channels[ch].preset = "none";
+                        savePreset(ch);
+                    }
                 }
 
                 if (_channels[ch].hasThermostat) {
-                    TelnetStream.printf("CH%d mode reg 0x07 = 0x%04X (modeBits=%d, sched=%d, lock=%d)\n",
-                        ch + 1, buffer[7], modeBits, (buffer[7] >> 3) & 1, (buffer[7] >> 11) & 1);
-                    if (_channels[ch].lastScannedMode.length() > 0 && _channels[ch].lastScannedMode != _channels[ch].mode) {
-                        TelnetStream.printf("CH%d mode %s -> %s (raw 0x%04X)\n", ch + 1,
-                            _channels[ch].lastScannedMode.c_str(), _channels[ch].mode.c_str(), buffer[7]);
-                    }
-                    _channels[ch].lastScannedMode = _channels[ch].mode;
+                    TelnetStream.printf("CH%d mode reg 0x07 = 0x%04X (modeBits=%d, bit3=%d, sched(bit14)=%d, lock=%d)\n",
+                        ch + 1, buffer[7], modeBits, (buffer[7] >> 3) & 1, (buffer[7] >> 14) & 1, (buffer[7] >> 11) & 1);
                 }
                 _channels[ch].rawConfig = buffer[7];
                 
                 // Update manualTemp only if in Heat mode, or if not initialized
                 // This prevents overwriting manualTemp if the controller mirrors active setpoint to Reg 0 in other modes
-                if (_channels[ch].mode == "heat" || _channels[ch].manualTemp == 0.0) {
+                if (_channels[ch].preset != "none") {
+                    _channels[ch].manualTemp = _channels[ch].presetRestoreTemp;
+                } else if (_channels[ch].mode == "heat" || _channels[ch].manualTemp == 0.0) {
                     _channels[ch].manualTemp = buffer[0] / 10.0f;
                 }
 
@@ -200,11 +206,10 @@ WavinChannel WavinController::getChannelData(int channelIndex) {
     return _channels[channelIndex];
 }
 
-bool WavinController::setTargetTemp(int channelIndex, float temp) {
+bool WavinController::writeSetpoint(int channelIndex, float temp) {
     uint16_t rawTemp = (uint16_t)(temp * 10);
     // Write to Category 0x02 (Packed Data), Page channelIndex, Index 0x00 (Manual Temp)
     if (writeRegister(0x02, channelIndex, 0x00, rawTemp)) {
-        _channels[channelIndex].manualTemp = temp;
         // Only update targetTemp if we are in Heat mode
         if (_channels[channelIndex].mode == "heat") {
             _channels[channelIndex].targetTemp = temp;
@@ -212,6 +217,101 @@ bool WavinController::setTargetTemp(int channelIndex, float temp) {
         return true;
     }
     return false;
+}
+
+bool WavinController::setTargetTemp(int channelIndex, float temp) {
+    if (channelIndex < 0 || channelIndex >= WAVIN_CHANNELS) return false;
+    if (writeSetpoint(channelIndex, temp)) {
+        _channels[channelIndex].manualTemp = temp;
+        // A manual setpoint change ends any active ESP32-side preset
+        if (_channels[channelIndex].preset != "none") {
+            _channels[channelIndex].preset = "none";
+            savePreset(channelIndex);
+        }
+        return true;
+    }
+    return false;
+}
+
+float WavinController::getPresetTemp(String preset) {
+    if (preset == "eco") return _presetTemps[0];
+    if (preset == "comfort") return _presetTemps[1];
+    if (preset == "away") return _presetTemps[2];
+    return 0.0f;
+}
+
+void WavinController::setPresetTemp(String preset, float temp) {
+    int idx = (preset == "eco") ? 0 : (preset == "comfort") ? 1 : (preset == "away") ? 2 : -1;
+    if (idx < 0) return;
+    _presetTemps[idx] = temp;
+    // Push the new temperature to rooms where this preset is currently active
+    for (int i = 0; i < WAVIN_CHANNELS; i++) {
+        if (_channels[i].preset == preset && _channels[i].hasThermostat) {
+            writeSetpoint(i, temp);
+            delay(50);
+        }
+    }
+}
+
+bool WavinController::restoreManualSetpoint(int channelIndex) {
+    WavinChannel& c = _channels[channelIndex];
+    if (c.preset == "none") return true;
+    float restore = c.presetRestoreTemp;
+    c.preset = "none";
+    savePreset(channelIndex);
+    if (restore <= 0.0f) return true;
+    c.manualTemp = restore;
+    return writeSetpoint(channelIndex, restore);
+}
+
+bool WavinController::applyPreset(int channelIndex, String preset) {
+    if (channelIndex < 0 || channelIndex >= WAVIN_CHANNELS) return false;
+    WavinChannel& c = _channels[channelIndex];
+
+    if (preset == "none" || preset == "heat") {
+        bool ok = restoreManualSetpoint(channelIndex);
+        if (c.mode != "heat") ok = setMode(channelIndex, "heat") && ok;
+        return ok;
+    }
+
+    float temp = getPresetTemp(preset);
+    if (temp <= 0.0f) return false;
+
+    // Presets are setpoint-only; make sure the room is not in standby
+    if (c.mode == "off" && !setMode(channelIndex, "heat")) return false;
+
+    float restore = c.presetRestoreTemp;
+    if (c.preset == "none") {
+        restore = (c.manualTemp > 0.0f) ? c.manualTemp : c.targetTemp;
+    }
+    if (!writeSetpoint(channelIndex, temp)) return false;
+    c.presetRestoreTemp = restore;
+    c.manualTemp = restore;
+    c.targetTemp = temp;
+    c.preset = preset;
+    savePreset(channelIndex);
+    return true;
+}
+
+void WavinController::loadPresets() {
+    Preferences prefs;
+    prefs.begin("wavin_presets", true);
+    for (int i = 0; i < WAVIN_CHANNELS; i++) {
+        String p = prefs.getString(("p" + String(i)).c_str(), "none");
+        if (p == "eco" || p == "comfort" || p == "away") {
+            _channels[i].preset = p;
+            _channels[i].presetRestoreTemp = prefs.getFloat(("r" + String(i)).c_str(), 0.0f);
+        }
+    }
+    prefs.end();
+}
+
+void WavinController::savePreset(int channelIndex) {
+    Preferences prefs;
+    prefs.begin("wavin_presets", false);
+    prefs.putString(("p" + String(channelIndex)).c_str(), _channels[channelIndex].preset);
+    prefs.putFloat(("r" + String(channelIndex)).c_str(), _channels[channelIndex].presetRestoreTemp);
+    prefs.end();
 }
 
 bool WavinController::setComfortTemp(int channelIndex, float temp) {
@@ -329,12 +429,18 @@ bool WavinController::setHysteresis(int channelIndex, float temp) {
 }
 
 bool WavinController::setMode(int channelIndex, String mode) {
+    if (channelIndex < 0 || channelIndex >= WAVIN_CHANNELS) return false;
+    // Presets are ESP32-side setpoints; never write eco/comfort mode bits to the controller
+    if (mode == "eco" || mode == "comfort" || mode == "away") return applyPreset(channelIndex, mode);
+
     uint16_t value = 0;
     if (mode == "off") value = 1; // Permanent Standby
     else if (mode == "heat") value = 0; // Manual
-    else if (mode == "eco") value = 2;
-    else if (mode == "comfort") value = 3;
-    
+    else return false;
+
+    // Leaving a preset restores the last manual setpoint
+    restoreManualSetpoint(channelIndex);
+
     // Mask 0xBFF0 clears bits 0-3 and bit 14 (schedule control).
     // Clearing SCHED_ENA ensures the device enters a permanent (non-schedule) mode
     // and does not revert to following its weekly schedule after a few seconds.
@@ -343,8 +449,6 @@ bool WavinController::setMode(int channelIndex, String mode) {
         
         // Update targetTemp immediately for UI responsiveness
         if (mode == "off") _channels[channelIndex].targetTemp = _channels[channelIndex].standbyTemp;
-        else if (mode == "eco") _channels[channelIndex].targetTemp = _channels[channelIndex].ecoTemp;
-        else if (mode == "comfort") _channels[channelIndex].targetTemp = _channels[channelIndex].comfortTemp;
         else if (mode == "heat") _channels[channelIndex].targetTemp = _channels[channelIndex].manualTemp;
 
         delay(50);

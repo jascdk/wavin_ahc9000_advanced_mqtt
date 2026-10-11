@@ -126,9 +126,14 @@ The **Master Climate** entity allows you to control multiple rooms at once.
 *   **How to use**: Press the "Boost Heating" button in Home Assistant.
 *   **Configuration**: Use the "Boost Rooms" mask in setup to exclude specific rooms (e.g., bedroom or workshop).
 
+### 🌿 Comfort / Eco / Away Presets (implemented on the ESP32)
+*   Presets are **setpoints stored on the ESP32** (`Master Eco Temp`, `Master Comfort Temp`, `Master Away Temp` number entities). Selecting a preset only writes the thermostat's normal setpoint register; the controller's own Eco/Comfort/Holiday mode bits and temperature registers are intentionally **not used**.
+*   **Why**: the room thermostats only support heat/off, and the controller reverted Eco/Comfort mode bits within one scan.
+*   The active preset is tracked per room on the ESP32 (and survives reboots). Changing a preset temperature updates the setpoint of rooms where that preset is active. If the setpoint is changed manually (thermostat or app) the preset is cleared and the room shows plain "heat"; selecting "none" restores the last manual setpoint.
+
 ### ✈️ Vacation Mode
 *   **How to use**: Select the **"Away"** preset on the **Master Climate** entity in Home Assistant.
-*   **Effect**: Sets all configured rooms to the "Holiday Temperature" (default 15°C).
+*   **Effect**: Sets all configured rooms to the "Master Away Temp" (default 16°C, stored on the ESP32).
 *   **Configuration**: Use the "Vacation Rooms" mask in setup to define which rooms are affected.
 
 ### 🔧 Valve Maintenance
@@ -138,8 +143,8 @@ The **Master Climate** entity allows you to control multiple rooms at once.
 
 ## Troubleshooting
 
-**Q: Comfort/Eco preset reverts to the manual setpoint after a short while?**
-A: Enable Telnet debugging and connect with `nc <gateway-ip> 23` (macOS/Linux). Look for the lines `mode reg 0x07` (raw mode register per room every scan), `mode comfort -> heat` (a mode change reported by the controller) and `readback` (register value read right after a `setMode` write). If no later set_mode/set_preset command arrives but the mode changes back, the controller or thermostat is reverting it.
+**Q: Comfort/Eco preset shows "heat" again after a short while?**
+A: Presets are ESP32-side setpoints. The preset is cleared when the setpoint read back from the controller no longer matches the preset temperature (e.g. it was changed on the thermostat or the preset temperature differs). Enable Telnet debugging (`nc <gateway-ip> 23`) and look for `preset '...' cleared` lines and `mode reg 0x07` (raw mode register, with schedule bit 14).
 
 **Q: I don't see all my rooms?**
 A: The gateway only creates entities for channels that have a thermostat connected. Check your wiring or perform a new scan by rebooting the ESP32.

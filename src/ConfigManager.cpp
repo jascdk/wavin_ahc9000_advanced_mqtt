@@ -40,6 +40,7 @@ ConfigManager::ConfigManager() {
     boost_temp = 24.0;
     master_eco_temp = 18.0;
     master_comfort_temp = 22.0;
+    master_away_temp = 16.0;
 }
 
 void ConfigManager::begin() {
@@ -83,6 +84,7 @@ void ConfigManager::begin() {
     boost_temp = preferences.getFloat("boost_temp", 24.0);
     master_eco_temp = preferences.getFloat("m_eco_temp", 18.0);
     master_comfort_temp = preferences.getFloat("m_comf_temp", 22.0);
+    master_away_temp = preferences.getFloat("m_away_temp", 16.0);
 
     // Load Room Names
     const char* default_names[] = {
@@ -146,6 +148,7 @@ void ConfigManager::save() {
     preferences.putFloat("boost_temp", boost_temp);
     preferences.putFloat("m_eco_temp", master_eco_temp);
     preferences.putFloat("m_comf_temp", master_comfort_temp);
+    preferences.putFloat("m_away_temp", master_away_temp);
     
     for(int i=0; i<WAVIN_CHANNELS; i++) {
         char key[10]; sprintf(key, "room_%d", i);
