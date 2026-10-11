@@ -335,10 +335,10 @@ bool WavinController::setMode(int channelIndex, String mode) {
     else if (mode == "eco") value = 2;
     else if (mode == "comfort") value = 3;
     
-    // Mask 0xFFF0 clears bits 0-3: bits 0-2 are MODE, bit 3 is SCHED_ENA.
+    // Mask 0xBFFF clears bits 0-3 and bit 14 (schedule control).
     // Clearing SCHED_ENA ensures the device enters a permanent (non-schedule) mode
     // and does not revert to following its weekly schedule after a few seconds.
-    if (writeMaskedRegister(0x02, channelIndex, 0x07, value, 0xFFF0)) {
+    if (writeMaskedRegister(0x02, channelIndex, 0x07, value, 0xBFFF)) {
         _channels[channelIndex].mode = mode;
         
         // Update targetTemp immediately for UI responsiveness
