@@ -25,6 +25,8 @@ struct WavinChannel {
     float alarmHighTemp = 0.0;
     float standbyTemp = 0.0;
     String mode = "heat";
+    uint16_t rawConfig = 0;
+    String lastScannedMode = "";
     bool intLock = false;
     float hysteresis = 0.0;
     float currentTemp = 0.0;

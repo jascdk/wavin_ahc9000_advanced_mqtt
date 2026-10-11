@@ -138,6 +138,9 @@ The **Master Climate** entity allows you to control multiple rooms at once.
 
 ## Troubleshooting
 
+**Q: Comfort/Eco preset reverts to the manual setpoint after a short while?**
+A: Enable Telnet debugging and connect with `nc <gateway-ip> 23` (macOS/Linux). Look for the lines `mode reg 0x07` (raw mode register per room every scan), `mode comfort -> heat` (a mode change reported by the controller) and `readback` (register value read right after a `setMode` write). If no later set_mode/set_preset command arrives but the mode changes back, the controller or thermostat is reverting it.
+
 **Q: I don't see all my rooms?**
 A: The gateway only creates entities for channels that have a thermostat connected. Check your wiring or perform a new scan by rebooting the ESP32.
 
