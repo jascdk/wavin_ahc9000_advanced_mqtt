@@ -93,6 +93,17 @@ void WavinController::updateChannels() {
                     _channels[ch].mode = "heat";
                     _channels[ch].targetTemp = buffer[0] / 10.0f; // In heat mode, Reg 0 is target
                 }
+
+                if (_channels[ch].hasThermostat) {
+                    TelnetStream.printf("CH%d mode reg 0x07 = 0x%04X (modeBits=%d, sched=%d, lock=%d)\n",
+                        ch + 1, buffer[7], modeBits, (buffer[7] >> 3) & 1, (buffer[7] >> 11) & 1);
+                    if (_channels[ch].lastScannedMode.length() > 0 && _channels[ch].lastScannedMode != _channels[ch].mode) {
+                        TelnetStream.printf("CH%d mode %s -> %s (raw 0x%04X)\n", ch + 1,
+                            _channels[ch].lastScannedMode.c_str(), _channels[ch].mode.c_str(), buffer[7]);
+                    }
+                    _channels[ch].lastScannedMode = _channels[ch].mode;
+                }
+                _channels[ch].rawConfig = buffer[7];
                 
                 // Update manualTemp only if in Heat mode, or if not initialized
                 // This prevents overwriting manualTemp if the controller mirrors active setpoint to Reg 0 in other modes
@@ -335,8 +346,22 @@ bool WavinController::setMode(int channelIndex, String mode) {
         else if (mode == "eco") _channels[channelIndex].targetTemp = _channels[channelIndex].ecoTemp;
         else if (mode == "comfort") _channels[channelIndex].targetTemp = _channels[channelIndex].comfortTemp;
         else if (mode == "heat") _channels[channelIndex].targetTemp = _channels[channelIndex].manualTemp;
+
+        delay(50);
+        uint16_t rb[1];
+        if (readRegisters(0x02, channelIndex, 0x07, 1, rb)) {
+            int rbBits = rb[0] & 0x07;
+            TelnetStream.printf("CH%d setMode('%s') readback reg 0x07 = 0x%04X (modeBits=%d)\n",
+                channelIndex + 1, mode.c_str(), rb[0], rbBits);
+            if (rbBits != (int)value) {
+                TelnetStream.printf("WARNING: CH%d setMode('%s') readback modeBits=%d does not match requested %d\n",
+                    channelIndex + 1, mode.c_str(), rbBits, value);
+            }
+        }
         return true;
     }
+    TelnetStream.printf("WARNING: CH%d setMode('%s') write FAILED (timeout/exception) - controller may not have accepted it\n",
+        channelIndex + 1, mode.c_str());
     return false;
 }
 
